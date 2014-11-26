@@ -25,11 +25,12 @@ namespace PTVGlass
 			base.OnCreate (bundle);
 
 			// Show loading screen
-			SetContentView (Resource.Layout.LoadingScreen);
-			var loadingText = FindViewById<TextView> (Resource.Id.loading_text);
-			loadingText.SetText(Resource.String.getting_departures); // set loading text
-			var progressBar = FindViewById<SliderView> (Resource.Id.indeterm_slider);
-			progressBar.StartIndeterminate (); // start indeterminate progress bar
+ 			SetContentView (Resource.Layout.LoadingScreen);
+ 			var loadingText = FindViewById<TextView> (Resource.Id.loading_text);
+ 			loadingText.SetText(Resource.String.getting_departures); // set loading text
+ 			var progressBar = FindViewById<SliderView> (Resource.Id.indeterm_slider);
+ 			progressBar.StartIndeterminate (); // start indeterminate progress bar
+ 
 
 			// get station ID from intent
 			int intentStationId = int.Parse(Intent.GetStringExtra ("stationId"));
@@ -43,16 +44,18 @@ namespace PTVGlass
 				// show error card
 				var errorCard = new Card(this);
 				errorCard.SetText (e.ToString());
-				errorCard.SetFootnote ("Error");
-				SetContentView (errorCard.ToView ());
+				SetContentView (errorCard.View);
+
 				return;
 			}
 
 			// if there are no departures, show no departure message
 			if (stationDepartures.Count == 0) {
-				var noDeparturesCard = new Card(this);
-				noDeparturesCard.SetText ("No upcoming departures scheduled");
-				SetContentView (noDeparturesCard.ToView ());
+				// Show error screen
+				SetContentView (Resource.Layout.ErrorScreen);
+				var errorText = FindViewById<TextView> (Resource.Id.error_text);
+				errorText.SetText(Resource.String.no_upcoming_departures); // set error text
+
 				return;
 			}
 

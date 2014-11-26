@@ -19,6 +19,8 @@ namespace PTVGlass
 	{
 		LocationManager locationManager;
 		TransportType transportType;
+		GestureDetector _gestureDetector;
+		HeadListView headListView;
 
 		protected override void OnCreate(Bundle bundle)
 		{
@@ -38,19 +40,23 @@ namespace PTVGlass
 			locationManager = GetSystemService(Context.LocationService) as LocationManager;
 			Criteria locationCriteria = new Criteria()
 			{
-				Accuracy = Accuracy.Coarse,
-				AltitudeRequired = false
+				Accuracy = Accuracy.Medium, // we need medium location accuracy
+				AltitudeRequired = false // we're catching the bus, not planes
 			};
-			IList<string> providers = locationManager.GetProviders(locationCriteria, true);
 
+			// GDK documentation strictly indicates Glass uses dybamic location providers which means we must listen to all providers
+			// https://developers.google.com/glass/develop/gdk/location-sensors/index
+			IList<string> providers = locationManager.GetProviders(locationCriteria, true);
 			foreach (string provider in providers)
 			{
-				locationManager.RequestLocationUpdates(provider, 1000, 1, this);
+				locationManager.RequestLocationUpdates(provider, 1000, 1, this); // provide updates at least every second
 			}
 		}
 
 		public async void NearbyDepartures(Location location)
 		{
+			var ptvApi = new PtvApi(); // new PTV API service
+
 			// Show loading screen
 			SetContentView(Resource.Layout.LoadingScreen);
 			var loadingText = FindViewById<TextView>(Resource.Id.loading_text);
@@ -58,21 +64,42 @@ namespace PTVGlass
 			var progressBar = FindViewById<SliderView>(Resource.Id.indeterm_slider);
 			progressBar.StartIndeterminate(); // start indeterminate progress bar
 
-			var ptvApi = new PtvApi();
-			var stopsNearby = await ptvApi.StopsNearby(location.Latitude, location.Longitude);
+			// try to call PTV API to get nearby stops
+			List<Stop> stopsNearby;
+			try
+			{
+				stopsNearby = await ptvApi.StopsNearby(location.Latitude, location.Longitude);
+			}
+			catch (Exception e)
+			{
+				// show error card
+				var errorCard = new Card(this);
+				errorCard.SetText(e.ToString());
+				SetContentView(errorCard.View);
 
+				return;
+			}
+
+			// depending on our mode of transport, we want different number of stops and error messages
 			int stopLimit = 1;
+			int noStopsNearby = Resource.String.no_stops_nearby;
 			switch (transportType)
 			{
 				case TransportType.Bus:
+					stopLimit = 6;
+					noStopsNearby = Resource.String.no_bus_stops_nearby;
+					break;
 				case TransportType.Tram:
-					stopLimit = 3;
+					stopLimit = 6;
+					noStopsNearby = Resource.String.no_tram_stops_nearby;
 					break;
 				case TransportType.Train:
 					stopLimit = 1;
+					noStopsNearby = Resource.String.no_train_stops_nearby;
 					break;
 			}
 
+			// Cull our stops nearby to just how many we want
 			stopsNearby = stopsNearby.Where(x =>
 				x.TransportType == transportType
 			).Take(stopLimit).ToList();
@@ -80,45 +107,63 @@ namespace PTVGlass
 			// if there are no stops nearby, show no stops message
 			if (stopsNearby.Count == 0)
 			{
-				var noStopsCard = new Card(this);
-				noStopsCard.SetText("No " + transportType.ToString().ToLower() + " stops nearby");
-				SetContentView(noStopsCard.ToView());
+				// Show error screen
+				SetContentView(Resource.Layout.ErrorScreen);
+				var errorText = FindViewById<TextView>(Resource.Id.error_text);
+				errorText.SetText(noStopsNearby); // set error text
+
 				return;
 			}
 
 			// Update loading text
 			loadingText.SetText(Resource.String.getting_departures);
 
+			// Get departures for each stop
 			List<Departure> nearByDepartures = new List<Departure>();
 			foreach (Stop stop in stopsNearby)
 			{
-				nearByDepartures.AddRange(await ptvApi.StationDepartures(stop.StopID, transportType, 1));
+				nearByDepartures.AddRange(await ptvApi.StationDepartures(stop.StopID, transportType, 1)); // merge departures together
 			}
 
 			// if there are no departures, show no departure message
 			if (nearByDepartures.Count == 0)
 			{
 				var noDeparturesCard = new Card(this);
-				noDeparturesCard.SetText("No upcoming departures scheduled");
-				SetContentView(noDeparturesCard.ToView());
+				noDeparturesCard.SetText(Resource.String.no_upcoming_departures);
+				SetContentView(noDeparturesCard.View);
 				return;
 			}
 
 			// show departures list screen
-			ListView listView;
 			SetContentView(Resource.Layout.DepartureScreen);
-			listView = FindViewById<ListView>(Resource.Id.listview);
+			headListView = FindViewById<HeadListView>(Resource.Id.listview);
 			// get the right type of screen adapter for the right type of transport
 			if (transportType == TransportType.Train)
 			{
 				// we don't need the train "number" for nearby trains
-				listView.Adapter = new NearbyTrainScreenAdapter(this, nearByDepartures); // bind list of station departures to listView
+				headListView.Adapter = new NearbyTrainScreenAdapter(this, nearByDepartures); // bind list of station departures to listView
 			}
 			else
 			{
-				listView.Adapter = new NearbyBusTramScreenAdapter(this, nearByDepartures); // bind list of station departures to listView
+				headListView.Adapter = new NearbyBusTramScreenAdapter(this, nearByDepartures); // bind list of station departures to listView
 			}
-			listView.RequestFocus(); // set focus on the listView so scrolling works on the list
+			headListView.activate();
+		}
+
+		protected override void OnResume()
+		{
+			if (headListView != null)
+				headListView.activate();
+
+			base.OnResume();
+		}
+
+		protected override void OnPause()
+		{
+			if (headListView != null)
+				headListView.deactivate();
+
+			base.OnPause();
 		}
 
 		public void OnProviderEnabled(string provider)
@@ -135,11 +180,11 @@ namespace PTVGlass
 
 		public void OnLocationChanged(Location location)
 		{
-			if (location.Accuracy < 500)
+			// if location is within 300 meter accuracy, we'll accept it
+			if (location.Accuracy < 300)
 			{
-				locationManager.RemoveUpdates(this); // stop getting updates to save battery
-
-				NearbyDepartures(location);
+				locationManager.RemoveUpdates(this); // stop getting location updates to save battery
+				NearbyDepartures(location); // use the last known location to get nearby departures
 			}
 		}
 	}
